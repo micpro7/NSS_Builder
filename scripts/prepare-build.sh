@@ -49,6 +49,8 @@ cd "$OPENWRT_DIR"
 
 # 1. Configure feeds.
 [[ -f feeds.conf ]] || cp feeds.conf.default feeds.conf
+# Exclude video feed to avoid Qt5 Kconfig recursion
+sed -i -E '/^src-[^[:space:]]+[[:space:]]+video[[:space:]]/d' feeds.conf
 
 # Standard OpenWrt community feeds to guarantee utility, routing, and system packages exist.
 STANDARD_FEEDS="
