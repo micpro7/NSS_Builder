@@ -56,7 +56,7 @@ src-git routing https://github.com/openwrt/routing.git
 "
 
 # Combine standard feeds with any custom variant/builder feeds passed via env
-FULL_FEEDS="$STANDARD_FEEDS"$'\n'$'\n'"$FEEDS"
+FULL_FEEDS="$STANDARD_FEEDS"$'\n'$'\n'$FEEDS
 
 if [[ -n "$FULL_FEEDS" ]]; then
   log::info "Configuring feeds:"
