@@ -11,9 +11,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'devices/**'
-      - '!devices/common-ppe/**'
-      - '!devices/ppe-*/**'
+      - 'devices/common/**'
+      - 'devices/ipq807x-1g/**'
       - 'scripts/**'
       - '.github/workflows/build.yml'
   schedule:
@@ -137,7 +136,7 @@ jobs:
             gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
               --draft \
-              --title "OpenWrt ${name} $date" \
+              --title "OpenWrt ${name}$date" \
               --notes-file release_notes.md >&2
 
             printf '%s\n' "$tag"
@@ -158,13 +157,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One entry per devices/<name>/ directory. The memory-profile groups exist
-        # because the ath11k memory profile is compile-time and image-wide, so
-        # boards can only share a build when they share a profile.
-        device: [xiaomi_ax3600, ipq807x-1g, ipq807x-512m, ipq807x-256m, ipq60xx-1g, ipq60xx-512m]
-        # The flavour is a .config fragment on top of the same overlays and the
-        # same source trees; mesh needs the 11.4 firmware, which is image-wide
-        # too, so it cannot share a build with the default flavour either.
+        # Restricted to the requested device directories
+        device: [ipq807x-1g]
         flavour: [default, mesh]
         include:
           - flavour: mesh
@@ -178,13 +172,6 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          # Pinned to the ubuntu-26.04 runner. OpenWrt main builds its own
-          # flex/bison/etc. host tools, so the host set is the minimal OpenWrt prerequisite list
-          # for Ubuntu 26.04. rsync is for prepare-build.sh's overlay step. Everything else
-          # (file, wget, unzip, gh) is preinstalled on the GitHub runner image.
-          # The runner image carries third-party apt repos the build has no use for,
-          # and their indexes intermittently fail to verify; the install below is the
-          # step that has to succeed.
           sudo apt-get update || true
           sudo apt-get install -y \
             bzip2 g++ gawk gcc git glibc-source libncurses-dev make rsync
@@ -220,11 +207,6 @@ jobs:
             echo "KBUILD_BUILD_HOST=github"
           } >>"$GITHUB_ENV"
 
-      # The OpenWrt source mirrors can stall, and a git source
-      # cannot fall back to a fresh clone: its PKG_MIRROR_HASH covers the zstd
-      # stream, which changes with the zstd version. Verified downloads are kept
-      # between runs; download.pl deletes any that no longer match their hash.
-      # Old source versions accumulate; deleting the dl- entries starts over.
       - name: Restore sources
         uses: actions/cache/restore@v6
         with:
@@ -244,11 +226,8 @@ jobs:
             echo "Download attempt $attempt failed; retrying..."
             sleep 5
           done
-          echo "grew=$(($(find dl -maxdepth 1 -type f | wc -l) > before))" >>"$GITHUB_OUTPUT"
+          echo "grew=$(($(find dl -maxdepth 1 -type f \vert{} wc -l) > before))" >>"$GITHUB_OUTPUT"
 
-      # One entry per run that fetched something new: the first job to get here
-      # saves, the others find the key taken. Each job restores the newest
-      # entry, so it grows to the union of every group's sources.
       - name: Save sources
         if: steps.download.outputs.grew == 1
         uses: actions/cache/save@v6
@@ -256,9 +235,6 @@ jobs:
           path: openwrt/dl
           key: dl-${{ github.run_id }}
 
-      # ccache hashes neither the assembler nor cc1, so the key covers every
-      # toolchain input and a change there starts from an empty cache. GitHub
-      # drops entries unused for 7 days and evicts the oldest over the quota.
       - name: Compute ccache key
         id: ccache
         run: |
@@ -293,18 +269,11 @@ jobs:
           set -euo pipefail
           out=$(dirname "$(find openwrt/bin/targets -name sha256sums)")
 
-          # Sysupgrade images only - no factory/initramfs, per the project's
-          # sysupgrade-from-existing-OpenWrt model. Image names carry the
-          # device, so the groups never collide in the release. The build
-          # metadata does, so it is uploaded under the group name instead of
-          # dropped - it is the answer to "what exactly was in this image".
           mapfile -t assets < <(find "$out" -maxdepth 1 -type f -name 'openwrt-*-squashfs-sysupgrade.bin')
           [[ ${#assets[@]} -gt 0 ]] || { echo "::error::no sysupgrade images in $out"; exit 1; }
           grep 'sysupgrade.bin' "$out/sha256sums" >"sha256sums-${DEVICE}.txt"
           cp "$out/config.buildinfo" "config-${DEVICE}.buildinfo"
 
-          # --clobber, so re-running a job that died mid-upload is a recovery
-          # and not a permanent "asset already exists".
           for attempt in 1 2 3; do
             gh release upload "$TAG" \
               --repo "$GITHUB_REPOSITORY" --clobber \
@@ -337,16 +306,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$BUILD_RESULT" != "success" ]]; then
-            # A half-built release would silently be missing devices, and a
-            # draft left behind is never pruned. Drop both and fail. No
-            # --cleanup-tag: a draft's tag exists only inside the release.
             gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
             gh release delete "$MESH_TAG" --repo "$GITHUB_REPOSITORY" --yes
             echo "::error::a build group failed ($BUILD_RESULT); draft releases discarded"
             exit 1
           fi
-          # --latest stays on the default flavour: mesh costs the 12.5 firmware
-          # line, so it is the deliberate pick, never the one a link lands on.
           gh release edit "$MESH_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
 
@@ -365,7 +329,5 @@ jobs:
       - name: Prune
         run: |
           set -euo pipefail
-          # Per prefix: the two flavours are separate series, and a shared keep
-          # window would drop one flavour's newest image to hold the other's.
           PREFIX="$RELEASE_PREFIX" bash scripts/prune-releases.sh
           PREFIX="$MESH_RELEASE_PREFIX" bash scripts/prune-releases.sh
