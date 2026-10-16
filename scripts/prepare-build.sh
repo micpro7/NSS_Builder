@@ -33,14 +33,14 @@ CONFIG_FRAGMENT="${CONFIG_FRAGMENT:-}"
 COMMON_DIR="$BUILDER_REPO/devices/${COMMON:-common}"
 DEVICE_DIR="$BUILDER_REPO/devices/$DEVICE"
 
-[[ -f "$DEVICE_DIR/config" ]] || log::die "$DEVICE_DIR/config not found"
-[[ -f "$COMMON_DIR/config" ]] || log::die "$COMMON_DIR/config not found"
+[[ -f "$DEVICE_DIR/config" ]] \vert{}\vert{} log::die "$DEVICE_DIR/config not found"
+[[ -f "$COMMON_DIR/config" ]] \vert{}\vert{} log::die "$COMMON_DIR/config not found"
 
 # Least to most specific; the last file wins on a symbol set in several.
 CONFIGS=("$COMMON_DIR/config" "$DEVICE_DIR/config")
 if [[ -n "$CONFIG_FRAGMENT" ]]; then
   [[ -f "$BUILDER_REPO/$CONFIG_FRAGMENT" ]] ||
-    log::die "CONFIG_FRAGMENT $CONFIG_FRAGMENT not found in $BUILDER_REPO"
+    log::die "CONFIG_FRAGMENT $CONFIG_FRAGMENT not found in$BUILDER_REPO"
   CONFIGS+=("$BUILDER_REPO/$CONFIG_FRAGMENT")
 fi
 
@@ -49,14 +49,20 @@ cd "$OPENWRT_DIR"
 # 1. Configure feeds.
 [[ -f feeds.conf ]] || cp feeds.conf.default feeds.conf
 
-if [[ -n "$FEEDS" ]]; then
-  log::info "Appending custom feeds:"
+# Standard OpenWrt community feeds to guarantee utility, routing, and system packages exist
+STANDARD_FEEDS="
+src-git packages https://github.com/openwrt/packages.git
+src-git routing https://github.com/openwrt/routing.git
+"
+
+# Combine standard feeds with any custom variant/builder feeds passed via env
+FULL_FEEDS="$STANDARD_FEEDS"$'\n'$'\n'"$FEEDS"
+
+if [[ -n "$FULL_FEEDS" ]]; then
+  log::info "Configuring feeds:"
   while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
+    [[ -z "${line// }" ]] && continue
     log::info "  $line"
-    # Idempotent: this script is re-run over an existing tree, and a plain
-    # append duplicates every custom feed on each pass - which then makes
-    # `feeds update` fetch the same feed repeatedly under one name.
     feed_name="$(awk '{print $2}' <<<"$line")"
     if ! grep -qxF "$line" feeds.conf; then
       # Same name as an existing feed: the line replaces it, so a fork can
@@ -64,11 +70,7 @@ if [[ -n "$FEEDS" ]]; then
       sed -i -E "/^src-\S+[[:space:]]+${feed_name}[[:space:]]/d" feeds.conf
       echo "$line" >>feeds.conf
     fi
-    # Update + install each custom feed individually so failures are obvious.
-    log::info "Updating feed: $feed_name"
-    ./scripts/feeds update "$feed_name"
-    ./scripts/feeds install -a -p "$feed_name"
-  done <<<"$FEEDS"
+  done <<<"$FULL_FEEDS"
 fi
 
 log::info "Updating + installing all feeds"
@@ -118,7 +120,7 @@ make defconfig
 log::info "Verifying defconfig kept the requested symbols"
 dropped=()
 while IFS= read -r req; do
-  grep -qxF "$req" .config || dropped+=("$req")
+  grep -qxF "$req" .config \vert{}\vert{} dropped+=("$req")
 done < <(cat "${CONFIGS[@]}" |
   grep -E '^CONFIG_[A-Za-z0-9_-]+=' |
   awk -F= '{ last[$1] = $0 } END { for (s in last) print last[s] }' |
@@ -135,7 +137,7 @@ fi
 if [[ -n "$FEEDS" ]]; then
   log::info "Disabling CONFIG_FEED_<custom> entries"
   while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
+    [[ -z "${line// }" ]] && continue
     feed_name="$(awk '{print $2}' <<<"$line")"
     # A fork standing in for a default feed keeps that feed's distfeed entry.
     grep -qE "^src-\S+[[:space:]]+${feed_name}[[:space:]]" feeds.conf.default && continue
