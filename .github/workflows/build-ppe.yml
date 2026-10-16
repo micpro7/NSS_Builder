@@ -1,18 +1,13 @@
 name: Build PPE
 
-# Test images for the PPE hardware flow offload: stock OpenWrt plus LuCI and the
-# levers that drive the offload, for every ipq807x and ipq60xx board.
-#   check (branch moved?) -> ensure the prerelease -> build each subtarget -> update
-# Unlike the NSS builds there is one permanent prerelease, updated in place, so
-# the link a tester was given keeps working.
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
       - 'devices/common-ppe/**'
-      - 'devices/ppe-*/**'
-      - 'patches/feeds/ppe/**'
+      - 'devices/common/**'
+      - 'devices/ppe-ipq807x/**'
       - 'scripts/**'
       - '.github/workflows/build-ppe.yml'
   schedule:
@@ -29,12 +24,8 @@ env:
   UPSTREAM_REPO: JuliusBairaktaris/openwrt-ppe-nss
   UPSTREAM_REF: ppe-flow-offload
   TAG: ppe-offload-test
-  # VARIANT picks files.<variant> and patches/feeds/<variant>.
   VARIANT: ppe
   COMMON: common-ppe
-  # The luci feed comes from the fork carrying luci-app-ppe-qos (openwrt/luci
-  # PR 8965); prepare-build.sh swaps it in for the default luci feed.
-  FEEDS: "src-git luci https://github.com/JuliusBairaktaris/luci.git;luci-app-ppe-qos"
 
 jobs:
   check:
@@ -53,10 +44,6 @@ jobs:
           sha="$(git ls-remote "https://github.com/$UPSTREAM_REPO" "$UPSTREAM_REF" | awk 'NR==1{print $1}')"
           [[ -n "$sha" ]] || { echo "::error::could not resolve $UPSTREAM_REPO@$UPSTREAM_REF"; exit 1; }
 
-          # Only a scheduled tick may skip: a push changed the builder config and
-          # a dispatch is an explicit request. The release body carries the SHA it
-          # was built from, and it is only written once a build has succeeded, so
-          # a failed run re-triggers on the next tick instead of stamping itself.
           need=true
           if [[ "$GITHUB_EVENT_NAME" == schedule ]] &&
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null |
@@ -81,7 +68,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      # One job, so the two build jobs never race to create the same tag.
       - run: |
           set -euo pipefail
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
@@ -91,7 +77,7 @@ jobs:
               --notes "Build in progress."
 
   build:
-    name: Build ${{ matrix.subtarget }}
+    name: Build ipq807x
     needs: [check, release]
     runs-on: ubuntu-26.04
     timeout-minutes: 360
@@ -100,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        subtarget: [ipq807x, ipq60xx]
+        subtarget: [ipq807x]
     env:
       GH_TOKEN: ${{ github.token }}
       SUBTARGET: ${{ matrix.subtarget }}
@@ -109,9 +95,6 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          # The runner image carries third-party apt repos the build has no use for,
-          # and their indexes intermittently fail to verify; the install below is the
-          # step that has to succeed.
           sudo apt-get update || true
           sudo apt-get install -y \
             bzip2 g++ gawk gcc git glibc-source libncurses-dev make rsync
@@ -147,11 +130,6 @@ jobs:
             echo "KBUILD_BUILD_HOST=github"
           } >>"$GITHUB_ENV"
 
-      # The OpenWrt source mirrors can stall, and a git source
-      # cannot fall back to a fresh clone: its PKG_MIRROR_HASH covers the zstd
-      # stream, which changes with the zstd version. Verified downloads are kept
-      # between runs; download.pl deletes any that no longer match their hash.
-      # Old source versions accumulate; deleting the dl- entries starts over.
       - name: Restore sources
         uses: actions/cache/restore@v6
         with:
@@ -171,11 +149,8 @@ jobs:
             echo "Download attempt $attempt failed; retrying..."
             sleep 5
           done
-          echo "grew=$(($(find dl -maxdepth 1 -type f | wc -l) > before))" >>"$GITHUB_OUTPUT"
+          echo "grew=$(($(find dl -maxdepth 1 -type f \vert{} wc -l) > before))" >>"$GITHUB_OUTPUT"
 
-      # One entry per run that fetched something new: the first job to get here
-      # saves, the others find the key taken. Each job restores the newest
-      # entry, so it grows to the union of every group's sources.
       - name: Save sources
         if: steps.download.outputs.grew == 1
         uses: actions/cache/save@v6
@@ -183,9 +158,6 @@ jobs:
           path: openwrt/dl
           key: dl-${{ github.run_id }}
 
-      # ccache hashes neither the assembler nor cc1, so the key covers every
-      # toolchain input and a change there starts from an empty cache. GitHub
-      # drops entries unused for 7 days and evicts the oldest over the quota.
       - name: Compute ccache key
         id: ccache
         run: |
@@ -225,8 +197,6 @@ jobs:
           grep 'sysupgrade.bin' "$out/sha256sums" >"sha256sums-${SUBTARGET}.txt"
           cp "$out/config.buildinfo" "config-${SUBTARGET}.buildinfo"
 
-          # --clobber deletes and re-uploads, which resets the download count;
-          # fold this subtarget's assets into the lifetime total first.
           REPO="$GITHUB_REPOSITORY" bash builder/scripts/download-stats.sh \
             "$TAG:^(openwrt-qualcommax-${SUBTARGET}-|sha256sums-${SUBTARGET}\\.txt$|config-${SUBTARGET}\\.buildinfo$)"
 
@@ -239,9 +209,6 @@ jobs:
             sleep 15
           done
 
-          # The release is permanent, so an image for a board that has since left
-          # the target would sit here forever under a body naming a newer commit.
-          # Asset names carry the subtarget, so each job clears only its own.
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq ".assets[].name | select(startswith(\"openwrt-qualcommax-${SUBTARGET}-\"))" |
             sort >published.txt
@@ -267,8 +234,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SHA: ${{ needs.check.outputs.sha }}
     steps:
-      # Reached only when both subtargets built, so the SHA recorded here always
-      # describes a complete image set - which is what the check job reads back.
       - run: |
           set -euo pipefail
           {
