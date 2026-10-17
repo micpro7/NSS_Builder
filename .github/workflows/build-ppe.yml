@@ -71,9 +71,9 @@ jobs:
       - run: |
           set -euo pipefail
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --prerelease --latest=false \
-              --title "OpenWrt PPE offload test images" \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" 
+              --prerelease --latest=false 
+              --title "OpenWrt PPE offload test images" 
               --notes "Build in progress."
 
   build:
@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update || true
-          sudo apt-get install -y \
+          sudo apt-get install -y 
             bzip2 g++ gawk gcc git glibc-source libncurses-dev make rsync
 
       - name: Checkout OpenWrt source
@@ -149,7 +149,7 @@ jobs:
             echo "Download attempt $attempt failed; retrying..."
             sleep 5
           done
-          echo "grew=$(($(find dl -maxdepth 1 -type f \vert{} wc -l) > before))" >>"$GITHUB_OUTPUT"
+          echo "grew=$(($(find dl -maxdepth 1 -type f | wc -l) > before))" >>"$GITHUB_OUTPUT"
 
       - name: Save sources
         if: steps.download.outputs.grew == 1
